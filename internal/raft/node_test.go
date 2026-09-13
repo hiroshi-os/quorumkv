@@ -157,7 +157,9 @@ func TestProposeReplicates(t *testing.T) {
 	if err := lead.Propose(ctx, EncodeSet("k", "v")); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(time.Second)
+	// Commit notification is pushed on the AE that advanced commitIndex;
+	// followers should apply without waiting a heartbeat (~10ms here).
+	deadline := time.Now().Add(80 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		ok := true
 		for _, fsm := range c.fsms {
@@ -168,9 +170,9 @@ func TestProposeReplicates(t *testing.T) {
 		if ok {
 			return
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(time.Millisecond)
 	}
-	t.Fatal("followers did not apply SET")
+	t.Fatal("followers did not apply SET after commit push")
 }
 
 func TestKillLeaderElectsAndPreservesCommit(t *testing.T) {

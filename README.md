@@ -23,7 +23,7 @@ cache elects a leader.
 ## Quick start (no Docker)
 
 ```bash
-make cluster          # n1:8081 n2:8082 n3:8083 + WAL under .data/
+make cluster          # fresh n1:8081 n2:8082 n3:8083 + WAL under .data/
 curl -s http://127.0.0.1:8081/status
 curl -s -X PUT --data 'osaka' http://127.0.0.1:8081/kv/city
 curl -s http://127.0.0.1:8082/kv/city    # follower GET is local

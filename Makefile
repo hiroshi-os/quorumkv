@@ -15,7 +15,7 @@ bench:
 	go test ./internal/raft ./internal/kv -bench=. -benchmem -count=3
 
 cluster: build
-	./scripts/local-cluster.sh start
+	./scripts/local-cluster.sh fresh
 
 chaos: build
 	./scripts/local-cluster.sh chaos

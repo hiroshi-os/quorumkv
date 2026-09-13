@@ -75,6 +75,7 @@ type Node struct {
 	nextIndex  map[string]uint64
 	matchIndex map[string]uint64
 	aeInflight map[string]bool
+	aePending  map[string]bool
 
 	electionTimeout   time.Duration
 	lastActivity      time.Time
@@ -101,6 +102,7 @@ func New(cfg Config) *Node {
 		nextIndex:  make(map[string]uint64),
 		matchIndex: make(map[string]uint64),
 		aeInflight: make(map[string]bool),
+		aePending:  make(map[string]bool),
 		waiters:    make(map[uint64]chan error),
 		storage:    cfg.Storage,
 		trans:      cfg.Transport,
@@ -232,6 +234,7 @@ func (n *Node) becomeLeaderLocked() {
 		n.nextIndex[p] = last + 1
 		n.matchIndex[p] = 0
 		n.aeInflight[p] = false
+		n.aePending[p] = false
 	}
 	// Commit a current-term no-op so previous-term entries can be committed
 	// (Raft Figure 8 / current-term commit rule).
@@ -275,10 +278,15 @@ func (n *Node) broadcastAppendEntriesLocked() {
 }
 
 func (n *Node) sendAppendEntriesLocked(peer string) {
-	if n.role != Leader || n.aeInflight[peer] {
+	if n.role != Leader {
+		return
+	}
+	if n.aeInflight[peer] {
+		n.aePending[peer] = true
 		return
 	}
 	n.aeInflight[peer] = true
+	n.aePending[peer] = false
 	next := n.nextIndex[peer]
 	if next < 1 {
 		next = 1
@@ -306,9 +314,15 @@ func (n *Node) sendAppendEntriesLocked(peer string) {
 			return
 		}
 		if err != nil {
+			if n.aePending[peer] {
+				n.sendAppendEntriesLocked(peer)
+			}
 			return
 		}
 		n.onAppendEntriesReplyLocked(peer, args, reply)
+		if n.role == Leader && n.aePending[peer] {
+			n.sendAppendEntriesLocked(peer)
+		}
 	}()
 }
 
@@ -326,8 +340,13 @@ func (n *Node) onAppendEntriesReplyLocked(peer string, args AppendEntriesArgs, r
 			n.matchIndex[peer] = matched
 		}
 		n.nextIndex[peer] = n.matchIndex[peer] + 1
+		oldCommit := n.commitIndex
 		n.maybeAdvanceCommitLocked()
-		if n.nextIndex[peer] <= n.log.LastIndex() {
+		// Push commitIndex as soon as it moves, and catch up any peer
+		// whose in-flight RPC still carried a stale LeaderCommit.
+		if n.commitIndex > oldCommit {
+			n.broadcastAppendEntriesLocked()
+		} else if n.nextIndex[peer] <= n.log.LastIndex() || n.commitIndex > args.LeaderCommit {
 			n.sendAppendEntriesLocked(peer)
 		}
 		return

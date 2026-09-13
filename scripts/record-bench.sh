@@ -13,7 +13,7 @@ OUT="$ROOT/bench/RESULTS.md"
   echo "- date (UTC): $(date -u '+%Y-%m-%d %H:%M:%S %Z')"
   echo "- kernel: $(uname -srm)"
   echo "- cpu: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs) × $(nproc)"
-  echo "- mem: $(awk '/MemTotal/ {printf \"%.1f GiB\", $2/1024/1024}' /proc/meminfo)"
+  echo "- mem: $(awk '/MemTotal/ {printf "%.1f GiB", $2/1024/1024}' /proc/meminfo)"
   echo "- go: $(go version)"
   echo
   echo "## go test -bench"
