@@ -1,0 +1,8 @@
+.git
+.bin
+.data
+.pids
+.logs
+*.md
+Dockerfile
+docker-compose.yml

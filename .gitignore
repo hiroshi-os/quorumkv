@@ -1,0 +1,7 @@
+/bin/
+/.data/
+/.pids/
+/.logs/
+*.test
+coverage.out
+.DS_Store

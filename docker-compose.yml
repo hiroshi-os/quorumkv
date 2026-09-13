@@ -1,0 +1,67 @@
+# 3-node quorumkv cluster. Majority = 2, so one kill still serves writes.
+# Host ports: n1=8081 n2=8082 n3=8083
+services:
+  n1:
+    build: .
+    hostname: n1
+    environment:
+      QUORUMKV_ID: n1
+      QUORUMKV_BIND: ":8080"
+      QUORUMKV_PEERS: "n2=http://n2:8080,n3=http://n3:8080"
+      QUORUMKV_DATA: /data
+      QUORUMKV_LOG_LEVEL: info
+    volumes:
+      - n1:/data
+    ports:
+      - "8081:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 1s
+      timeout: 1s
+      retries: 20
+    restart: "no"
+
+  n2:
+    build: .
+    hostname: n2
+    environment:
+      QUORUMKV_ID: n2
+      QUORUMKV_BIND: ":8080"
+      QUORUMKV_PEERS: "n1=http://n1:8080,n3=http://n3:8080"
+      QUORUMKV_DATA: /data
+      QUORUMKV_LOG_LEVEL: info
+    volumes:
+      - n2:/data
+    ports:
+      - "8082:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 1s
+      timeout: 1s
+      retries: 20
+    restart: "no"
+
+  n3:
+    build: .
+    hostname: n3
+    environment:
+      QUORUMKV_ID: n3
+      QUORUMKV_BIND: ":8080"
+      QUORUMKV_PEERS: "n1=http://n1:8080,n2=http://n2:8080"
+      QUORUMKV_DATA: /data
+      QUORUMKV_LOG_LEVEL: info
+    volumes:
+      - n3:/data
+    ports:
+      - "8083:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 1s
+      timeout: 1s
+      retries: 20
+    restart: "no"
+
+volumes:
+  n1:
+  n2:
+  n3:
