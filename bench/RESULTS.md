@@ -10,7 +10,7 @@ This is the algorithm cost, not the compose+WAL cost.
 - cpu: AMD Ryzen 5 7530U with Radeon Graphics × 12 logical processors
 - mem: 23.3 GiB
 - go: go version go1.25.5 windows/amd64
-- commit: see `git log -1` on this branch after the ReadIndex commit (stamped below after commit)
+- commit: `db2acda0a5c0db9446d2de2f57a1220170c1f8b1` (tree measured on this branch; SHA stamped after commit)
 
 ## Linearizability (porcupine)
 
