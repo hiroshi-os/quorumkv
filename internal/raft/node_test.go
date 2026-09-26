@@ -345,7 +345,7 @@ func TestConflictIndexFastRollback(t *testing.T) {
 		Term:         5,
 		PrevLogIndex: 6,
 		PrevLogTerm:  3,
-	}, reply)
+	}, reply, 0)
 	if lead.nextIndex["f"] != 4 {
 		t.Fatalf("nextIndex=%d want 4 (skip whole conflict term)", lead.nextIndex["f"])
 	}

@@ -89,5 +89,10 @@ func (e ErrNotLeader) Error() string {
 	return fmt.Sprintf("not leader (leader=%s)", e.LeaderID)
 }
 
-// ErrLostLeadership is returned to in-flight Propose calls after a step-down.
+// ErrLostLeadership is returned to in-flight Propose and ReadIndex calls
+// after a step-down.
 var ErrLostLeadership = fmt.Errorf("lost leadership before commit")
+
+// ErrStopped is returned when the node has been Stopped and will not
+// serve client operations or Raft RPCs.
+var ErrStopped = fmt.Errorf("node stopped")

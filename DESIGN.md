@@ -86,47 +86,62 @@ framing. The algorithm does not care.
 applied locally (which happens only after commit), then returns 200.
 Followers apply when `leaderCommit` advances in AppendEntries.
 
-`GET` is **not** a Raft command. It reads the local applied map on
-whatever node received the request. Followers are allowed to serve
-GET. This is documented, not accidental.
+`GET` without a query flag is **not** a Raft command. It reads the local
+applied map on whatever node received the request. Followers are allowed
+to serve that path. This is documented, not accidental.
+
+`GET ?consistent=true` is **ReadIndex** (Raft §6.4). The receiving node
+must be the leader (followers forward once). The leader:
+
+1. waits until it has committed an entry from its current term (the
+   election no-op is enough);
+2. records `readIndex = commitIndex`;
+3. sends a fresh AppendEntries round and waits for a quorum of
+   acknowledgements from RPCs dispatched *after* the read began;
+4. waits until `lastApplied >= readIndex`;
+5. returns the local FSM value.
+
+A partitioned ex-leader cannot gather a quorum ack and fails the
+read instead of serving stale state.
 
 ```
-PUT /kv/{key}     SET via leader (followers forward once)
-GET /kv/{key}     local applied-state read
-GET /status       role, term, leader, commit/applied indexes
+PUT /kv/{key}                    SET via leader (followers forward once)
+GET /kv/{key}?consistent=true    ReadIndex linearizable read
+GET /kv/{key}                    local applied-state read (may be stale)
+GET /status                      role, term, leader, commit/applied indexes
 GET /health
-POST /admin/crash chaos hook (process exits)
+POST /admin/crash                chaos hook (process exits)
 ```
 
 ## Read consistency caveats (read this)
 
 | Read | Linearizable? | What you can observe |
 |---|---|---|
-| GET on leader | **No** | No ReadIndex / leader lease. A partitioned ex-leader still
+| `GET ?consistent=true` | **Yes, if it returns 200** | Quorum heartbeat confirmed
+  leadership; FSM applied through the commit index captured for this
+  read. Partitioned ex-leader returns an error. |
+| Plain `GET` on leader | **No** | No ReadIndex. A partitioned ex-leader still
   serves last *committed* state. It will not serve uncommitted SETs
   (those never applied), but it can miss commits that happened on a
-  new majority after the partition. |
-| GET on follower | **No** | May lag the leader by one or more heartbeats. Can miss a SET that
-  already returned 200 to a client. Can also be a partitioned node
-  whose apply pointer is stale. |
+  new majority after the partition. Porcupine finds this. |
+| Plain `GET` on follower | **No** | May lag the leader by one or more heartbeats.
+  Can miss a SET that already returned 200 to a client. |
 | SET | **Yes, if it returns 200** | Majority-committed, current-term rule
   applied. Lost-leadership mid-wait returns an error; the entry may
   still commit later under a new leader or be overwritten if it never
   reached a quorum. |
 
-What we did **not** implement, and why GET is not “safe”:
+What we still do **not** implement:
 
-- **ReadIndex** (Raft §6.4): bounce a heartbeat, then serve a read at
-  the confirmed commit index. Needed for linearizable leader reads.
-- **Leader leases**: wall-clock bound so a stale leader refuses reads.
-  Needs bounded clock drift, which we do not assume.
+- **Leader leases**: wall-clock bound so a stale leader refuses reads
+  without an RTT. Needs bounded clock drift, which we do not assume.
 - **Read-your-writes from a follower**: would need a commit index in
-  the SET response and a wait on the follower.
+  the SET response and a wait on the follower. Use `?consistent=true`
+  (forwarded to the leader) instead.
 
-If you need linearizable reads, do not use GET as shipped. Sit a
-lease/ReadIndex path in front, or read only through a SET-like
-confirming RPC. A cache (ringcache) in front of GET makes this *worse*
-unless you invalidate on commit.
+A cache (ringcache) in front of plain GET still makes staleness *worse*
+unless you invalidate on commit. Cache in front of ReadIndex is fine
+if you treat cache hits as a separate consistency tier.
 
 ## Persistence
 
@@ -152,13 +167,22 @@ with a stale term can still bump the term and interrupt a stable
 leader for one election. Chaos tests *kill* the process so this does
 not fire; a flapping network would.
 
+## Linearizability checking
+
+`internal/raft/lincheck_test.go` drives concurrent clients against an
+in-memory 3-node cluster while injecting partitions (`MemoryNetwork.
+Partition` / `Cut`) and leader kills. Histories are checked with
+[porcupine](https://github.com/anishathalye/porcupine). Measured
+counts (histories checked, passes, stale-path violations) are recorded
+in `bench/RESULTS.md` from a real run — no estimates.
+
 ## Why not a library
 
 The point of this repo is to *be* Raft: election timeouts, the two
-RPCs, quorum commit, conflictIndex, Figure 8. Wrapping hashicorp/raft
-would demo a KV API and hide every invariant listed above. Libraries
-are the right call for a product that needs Raft; they are the wrong
-call for a product whose job is to show Raft.
+RPCs, quorum commit, conflictIndex, Figure 8, ReadIndex. Wrapping
+hashicorp/raft would demo a KV API and hide every invariant listed
+above. Libraries are the right call for a product that needs Raft;
+they are the wrong call for a product whose job is to show Raft.
 
 ## Honest performance envelope
 

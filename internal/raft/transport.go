@@ -22,11 +22,19 @@ type Transport interface {
 }
 
 // MemoryNetwork routes RPCs in-process. Used by unit tests and benches.
-// Isolate(id) drops all RPCs to/from that node (partition / kill).
+//
+// Two failure modes:
+//   - Isolate(id) drops every RPC to or from that node (a kill, or a
+//     node cut off from the whole cluster).
+//   - Partition / Cut drop specific pairs. Partition(group) severs every
+//     link between group and the other registered nodes while leaving
+//     links inside each side up, so both sides can still elect if they
+//     hold a quorum.
 type MemoryNetwork struct {
 	mu    sync.RWMutex
 	nodes map[string]*Node
 	drop  map[string]bool
+	cut   map[string]bool // canonical pair key -> link is partitioned
 }
 
 func NewMemoryNetwork() *MemoryNetwork {
@@ -54,15 +62,73 @@ func (m *MemoryNetwork) Heal(id string) {
 	delete(m.drop, id)
 }
 
+func pairKey(a, b string) string {
+	if a > b {
+		a, b = b, a
+	}
+	return a + "\x00" + b
+}
+
+// Cut drops RPCs between a and b in both directions.
+func (m *MemoryNetwork) Cut(a, b string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cut == nil {
+		m.cut = make(map[string]bool)
+	}
+	m.cut[pairKey(a, b)] = true
+}
+
+// HealCut restores RPCs between a and b.
+func (m *MemoryNetwork) HealCut(a, b string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.cut, pairKey(a, b))
+}
+
+// Partition severs every link between group and nodes outside it.
+// Links among group, and among the complement, stay up.
+func (m *MemoryNetwork) Partition(group []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cut == nil {
+		m.cut = make(map[string]bool)
+	}
+	in := make(map[string]bool, len(group))
+	for _, id := range group {
+		in[id] = true
+	}
+	for id := range m.nodes {
+		if in[id] {
+			continue
+		}
+		for g := range in {
+			m.cut[pairKey(id, g)] = true
+		}
+	}
+}
+
+// HealPartitions clears pair cuts. Isolate flags are left alone.
+func (m *MemoryNetwork) HealPartitions() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cut = make(map[string]bool)
+}
+
 func (m *MemoryNetwork) lookup(from, to string) (*Node, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if m.drop[from] || m.drop[to] {
+	if m.drop[from] || m.drop[to] || m.cut[pairKey(from, to)] {
 		return nil, errUnreachable
 	}
 	n := m.nodes[to]
 	if n == nil {
 		return nil, errUnreachable
+	}
+	select {
+	case <-n.stop:
+		return nil, errUnreachable
+	default:
 	}
 	return n, nil
 }

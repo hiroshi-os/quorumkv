@@ -5,68 +5,96 @@ This is the algorithm cost, not the compose+WAL cost.
 
 ## Hardware
 
-- date (UTC): 2026-09-13 10:54:50 UTC
-- kernel: Linux 6.12.94+ x86_64
-- cpu: Intel(R) Xeon(R) Processor × 4
-- mem: 15.6 GiB 
-- go: go version go1.22.2 linux/amd64
+- date (UTC): 2026-09-26 14:30:07 UTC
+- kernel / OS: Microsoft Windows 11 Home Single Language 10.0.26200 (windows/amd64)
+- cpu: AMD Ryzen 5 7530U with Radeon Graphics × 12 logical processors
+- mem: 23.3 GiB
+- go: go version go1.25.5 windows/amd64
+- commit: `db2acda0a5c0db9446d2de2f57a1220170c1f8b1` (tree measured on this branch; SHA stamped after commit)
+
+## Linearizability (porcupine)
+
+Exact command:
+
+```
+QUORUMKV_FULL_HISTORIES=1 go test ./internal/raft/ -count=1 -timeout 45m -v -run TestFullLinearizability
+```
+
+(PowerShell: `$env:QUORUMKV_FULL_HISTORIES='1'; go test ./internal/raft/ -count=1 -timeout 45m -v -run TestFullLinearizability`)
+
+Result line from that run:
+
+```
+LIN_RESULT consistent_histories=500 consistent_pass=500 consistent_illegal=0 consistent_unknown=0 stale_histories=100 stale_pass=12 stale_violations=88 stale_unknown=0
+```
+
+| path | histories checked | pass | non-linearizable | checker unknown |
+|---|---:|---:|---:|---:|
+| `GET` via ReadIndex (`consistent=true`) under concurrent clients + leader kills + partitions | 500 | 500 | 0 | 0 |
+| plain local `GET` under the same chaos (proves the checker) | 100 | 12 | **88** | 0 |
+
+Wall time for the full measurement: 44.99s.
 
 ## go test -bench
 
+Exact command:
+
 ```
-goos: linux
+go test -c -o bin/raft.test.exe ./internal/raft
+./bin/raft.test.exe -test.bench=. -test.benchmem -test.count=3 -test.run=^$
+go test -c -o bin/kv.test.exe ./internal/kv
+./bin/kv.test.exe -test.bench=. -test.benchmem -test.count=3 -test.run=^$
+```
+
+```
+goos: windows
 goarch: amd64
 pkg: github.com/hiroshi-os/quorumkv/internal/raft
-cpu: Intel(R) Xeon(R) Processor
-BenchmarkElection3-4          	      43	  28982946 ns/op	    8296 B/op	     138 allocs/op
-BenchmarkElection3-4          	      37	  27684511 ns/op	    8408 B/op	     136 allocs/op
-BenchmarkElection3-4          	      51	  28110289 ns/op	    8485 B/op	     138 allocs/op
-BenchmarkProposeCommitted-4   	  142930	      8130 ns/op	    3164 B/op	      40 allocs/op
-BenchmarkProposeCommitted-4   	  149378	      7764 ns/op	    3405 B/op	      40 allocs/op
-BenchmarkProposeCommitted-4   	  149656	      7785 ns/op	    3403 B/op	      40 allocs/op
-BenchmarkLocalGet-4           	85523744	        13.91 ns/op	       0 B/op	       0 allocs/op
-BenchmarkLocalGet-4           	76714064	        13.92 ns/op	       0 B/op	       0 allocs/op
-BenchmarkLocalGet-4           	83435048	        13.97 ns/op	       0 B/op	       0 allocs/op
+cpu: AMD Ryzen 5 7530U with Radeon Graphics
+BenchmarkElection3-12                  48         26540442 ns/op       10395 B/op         152 allocs/op
+BenchmarkElection3-12                  40         29144072 ns/op       10068 B/op         151 allocs/op
+BenchmarkElection3-12                  49         27549188 ns/op        9864 B/op         150 allocs/op
+BenchmarkProposeCommitted-12        52353            28463 ns/op        3458 B/op          43 allocs/op
+BenchmarkProposeCommitted-12        39346            44235 ns/op        3490 B/op          43 allocs/op
+BenchmarkProposeCommitted-12        40363            35925 ns/op        3480 B/op          43 allocs/op
+BenchmarkReadIndex-12              429524             3310 ns/op         602 B/op           7 allocs/op
+BenchmarkReadIndex-12              513634             3255 ns/op         604 B/op           7 allocs/op
+BenchmarkReadIndex-12              313154             3622 ns/op         612 B/op           7 allocs/op
+BenchmarkLocalGet-12             86706454            15.03 ns/op           0 B/op           0 allocs/op
+BenchmarkLocalGet-12             31254313            35.11 ns/op           0 B/op           0 allocs/op
+BenchmarkLocalGet-12             68517769            16.22 ns/op           0 B/op           0 allocs/op
 PASS
-ok  	github.com/hiroshi-os/quorumkv/internal/raft	13.286s
-goos: linux
+goos: windows
 goarch: amd64
 pkg: github.com/hiroshi-os/quorumkv/internal/kv
-cpu: Intel(R) Xeon(R) Processor
-BenchmarkGet-4   	86557372	        13.67 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGet-4   	87964214	        13.89 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGet-4   	86264715	        13.69 ns/op	       0 B/op	       0 allocs/op
+cpu: AMD Ryzen 5 7530U with Radeon Graphics
+BenchmarkGet-12                 81619081            13.42 ns/op           0 B/op           0 allocs/op
+BenchmarkGet-12                 99650392            16.38 ns/op           0 B/op           0 allocs/op
+BenchmarkGet-12                 91197883            15.40 ns/op           0 B/op           0 allocs/op
 PASS
-ok  	github.com/hiroshi-os/quorumkv/internal/kv	3.635s
 ```
 
 ## How to read this
 
-| bench | p50-ish | what it includes |
+| bench | typical | what it includes |
 |---|---|---|
 | `BenchmarkElection3` | ~28 ms | randomized election with 20–40 ms timeouts, in-process RPC |
-| `BenchmarkProposeCommitted` | ~8 µs | majority commit + apply, memory log, no HTTP, no fsync |
-| `BenchmarkLocalGet` / `kv.BenchmarkGet` | ~14 ns | one `sync.RWMutex` map read |
+| `BenchmarkProposeCommitted` | ~28–44 µs | majority commit + apply, memory log, no HTTP, no fsync |
+| `BenchmarkReadIndex` | ~3.3 µs | quorum AppendEntries ack + wait for apply (in-process) |
+| `BenchmarkLocalGet` / `kv.BenchmarkGet` | ~15 ns | one `sync.RWMutex` map read |
 
-These are **not** docker-compose numbers. HTTP + JSON + WAL fsync is
-dominated by disk and kernel, often 10–100× slower than the 8 µs
-Propose. GET stays a local map read even over HTTP (plus one
-`json.Encode`).
+ReadIndex is ~200× a local GET in-process because it waits for a
+fresh heartbeat round. Over HTTP+JSON that gap is dominated by the
+network RTT either way. These are **not** docker-compose numbers.
 
-Election time in the 3-node local demo (250–400 ms timeouts) is
-one timeout plus a vote RTT, typically a few hundred milliseconds
-after a leader crash — see the chaos run, not this bench.
-
-## Local 3-node HTTP + WAL + fsync (same host, 2026-09-13)
+## Local 3-node HTTP + WAL + fsync (prior host, 2026-09-13)
 
 Process-per-node on `127.0.0.1:8081-8083`, `FileStorage` with fsync,
-JSON-over-HTTP. 20 sequential curls after a leader existed:
+JSON-over-HTTP. 20 sequential curls after a leader existed (Linux Xeon
+host from the original MVP run — kept for the demo envelope; not
+re-measured on this Windows host):
 
 | op | http | observed |
 |---|---|---|
 | `PUT /kv/bench` via leader | 200 | 1.4–2.4 ms (≈1.7 ms typical) |
 | `GET /kv/city` on a follower | 200 | 0.15–0.50 ms (≈0.25 ms typical) |
-
-That is the number to quote for the demo. The 8 µs in-process Propose
-is the Raft state machine without the kernel.
-
