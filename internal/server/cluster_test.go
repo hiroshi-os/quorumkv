@@ -196,6 +196,59 @@ func TestHTTPElectSetGet(t *testing.T) {
 	}
 }
 
+func TestHTTPConsistentGet(t *testing.T) {
+	c := startHTTPCluster(t, 3)
+	li, _ := c.waitLeader(t)
+	req, _ := http.NewRequest(http.MethodPut, c.urls[li]+"/kv/city", strings.NewReader("osaka"))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("put %s", resp.Status)
+	}
+
+	var follower string
+	for i, u := range c.urls {
+		if i != li {
+			follower = u
+			break
+		}
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	var body map[string]any
+	for time.Now().Before(deadline) {
+		r, err := http.Get(follower + "/kv/city?consistent=true")
+		if err != nil {
+			time.Sleep(15 * time.Millisecond)
+			continue
+		}
+		body = map[string]any{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		r.Body.Close()
+		if r.StatusCode == http.StatusOK && body["value"] == "osaka" && body["consistent"] == true {
+			break
+		}
+		time.Sleep(15 * time.Millisecond)
+		body = nil
+	}
+	if body == nil {
+		t.Fatal("consistent GET did not return the committed value")
+	}
+
+	r, err := http.Get(c.urls[li] + "/kv/city")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Body.Close()
+	local := map[string]any{}
+	_ = json.NewDecoder(r.Body).Decode(&local)
+	if local["consistent"] != false {
+		t.Fatalf("default GET consistent=%v", local["consistent"])
+	}
+}
+
 func TestHTTPKillLeader(t *testing.T) {
 	c := startHTTPCluster(t, 3)
 	li, old := c.waitLeader(t)

@@ -1,7 +1,11 @@
-/bin/
-/.data/
-/.pids/
-/.logs/
+bin/
+.data/
+.pids/
+.logs/
 *.test
+*.test.exe
 coverage.out
 .DS_Store
+bench/lincheck-run.txt
+bench/bench-run.txt
+bench/bench-kv-run.txt

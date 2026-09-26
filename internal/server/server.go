@@ -97,27 +97,128 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
+	if r.URL.Query().Get("consistent") == "true" {
+		s.handleConsistentGet(w, r, key)
+		return
+	}
 	val, ok := s.store.Get(key)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]any{
-			"error":  "not_found",
-			"key":    key,
-			"stale":  true,
-			"hint":   "GET is a local read of applied state; it may lag the leader",
-			"status": s.node.Status(),
+			"error":      "not_found",
+			"key":        key,
+			"stale":      true,
+			"consistent": false,
+			"hint":       "GET without ?consistent=true is a local read of applied state; it may lag the leader",
+			"status":     s.node.Status(),
 		})
 		return
 	}
 	st := s.node.Status()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"key":    key,
-		"value":  val,
-		"node":   st.ID,
-		"role":   st.Role,
-		"term":   st.Term,
-		"leader": st.Leader,
-		"note":   "local applied-state read; not a linearizable quorum read",
+		"key":        key,
+		"value":      val,
+		"node":       st.ID,
+		"role":       st.Role,
+		"term":       st.Term,
+		"leader":     st.Leader,
+		"consistent": false,
+		"note":       "local applied-state read; not a linearizable quorum read",
 	})
+}
+
+// handleConsistentGet serves Raft ReadIndex (§6.4). The leader confirms it
+// still holds a quorum, waits until the FSM has applied the commit index
+// captured for this read, then returns the local value. Followers forward
+// once. A partitioned ex-leader fails the read instead of returning stale data.
+func (s *Server) handleConsistentGet(w http.ResponseWriter, r *http.Request, key string) {
+	ctx, cancel := context.WithTimeout(r.Context(), s.proposeTO)
+	defer cancel()
+	readIndex, err := s.node.ReadIndex(ctx)
+	if err != nil {
+		if r.Header.Get("X-QuorumKV-Forwarded") == "" && s.forwardConsistentGet(w, r, ctx, err) {
+			return
+		}
+		code := http.StatusServiceUnavailable
+		if errors.Is(err, context.DeadlineExceeded) {
+			code = http.StatusGatewayTimeout
+		}
+		writeJSON(w, code, map[string]any{
+			"error":      err.Error(),
+			"consistent": true,
+			"leader":     s.node.LeaderID(),
+		})
+		return
+	}
+	st := s.node.Status()
+	val, ok := s.store.Get(key)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error":      "not_found",
+			"key":        key,
+			"stale":      false,
+			"consistent": true,
+			"read_index": readIndex,
+			"node":       st.ID,
+			"leader":     st.Leader,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"key":        key,
+		"value":      val,
+		"node":       st.ID,
+		"role":       st.Role,
+		"term":       st.Term,
+		"leader":     st.Leader,
+		"consistent": true,
+		"read_index": readIndex,
+		"note":       "readindex: quorum heartbeat confirmed leadership; FSM applied through the commit index captured for this read",
+	})
+}
+
+// forwardConsistentGet forwards a ReadIndex GET to the known leader.
+// It returns true when it wrote the response.
+func (s *Server) forwardConsistentGet(w http.ResponseWriter, r *http.Request, ctx context.Context, err error) bool {
+	var nl raft.ErrNotLeader
+	forwardable := errors.As(err, &nl) || errors.Is(err, raft.ErrLostLeadership)
+	if !forwardable {
+		return false
+	}
+	id := ""
+	if errors.As(err, &nl) {
+		id = nl.LeaderID
+	}
+	if id == "" || id == s.node.ID() {
+		id = s.node.LeaderID()
+	}
+	if id == "" || id == s.node.ID() {
+		return false
+	}
+	url, ok := s.peers[id]
+	if !ok {
+		return false
+	}
+	s.forwardGet(w, ctx, url, r.PathValue("key"))
+	return true
+}
+
+func (s *Server) forwardGet(w http.ResponseWriter, ctx context.Context, base, key string) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/kv/"+key+"?consistent=true", nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	req.Header.Set("X-QuorumKV-Forwarded", "1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error(), "forwarded_to": base, "consistent": true})
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-QuorumKV-Forwarded-To", base)
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
 }
 
 func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {

@@ -93,6 +93,35 @@ func BenchmarkProposeCommitted(b *testing.B) {
 	}
 }
 
+func BenchmarkReadIndex(b *testing.B) {
+	c := benchCluster(b, 3)
+	// Stabler timeouts: ReadIndex issues frequent AE rounds; tight election
+	// windows flake under bench load on a busy host.
+	for _, n := range c.nodes {
+		n.cfg.ElectionMin = 200 * time.Millisecond
+		n.cfg.ElectionMax = 400 * time.Millisecond
+		n.cfg.Heartbeat = 20 * time.Millisecond
+	}
+	lead := waitLeaderB(b, c)
+	ctx := context.Background()
+	if _, err := lead.ReadIndex(ctx); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := lead.ReadIndex(ctx); err != nil {
+			// Re-acquire after rare step-down; do not count toward timing.
+			b.StopTimer()
+			lead = waitLeaderB(b, c)
+			if _, err := lead.ReadIndex(ctx); err != nil {
+				b.Fatal(err)
+			}
+			b.StartTimer()
+		}
+	}
+}
+
 func BenchmarkLocalGet(b *testing.B) {
 	fsm := &memFSM{data: map[string]string{"k": "v"}}
 	b.ReportAllocs()

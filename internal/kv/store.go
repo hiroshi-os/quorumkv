@@ -6,7 +6,8 @@ import (
 )
 
 // Command is the replicated FSM operation. GET is not a command — it is a
-// local read of applied state (see DESIGN.md for consistency caveats).
+// read of applied state. A local Get can be stale. Linearizable reads call
+// raft.Node.ReadIndex first (see DESIGN.md).
 type Command struct {
 	Op    string `json:"op"`
 	Key   string `json:"key"`

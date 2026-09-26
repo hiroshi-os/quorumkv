@@ -83,6 +83,13 @@ type Node struct {
 	votes             map[string]bool
 	waiters           map[uint64]chan error
 
+	// ReadIndex (§6.4). aeGen increases on every AppendEntries dispatch.
+	// A consistent read only counts replies to rounds sent after it began.
+	aeGen         uint64
+	pendingReads  []*pendingRead
+	commitWaiters []chan struct{}
+	applyWaiters  []applyWait
+
 	storage Storage
 	trans   Transport
 	apply   func([]byte)
@@ -257,8 +264,12 @@ func (n *Node) becomeFollowerLocked(term uint64) {
 	}
 	if n.role == Leader {
 		n.failWaitersLocked(ErrLostLeadership)
+		n.failPendingReadsLocked(ErrLostLeadership)
 	}
 	n.role = Follower
+	// Wake ReadIndex calls blocked on a current-term commit so they
+	// observe the step-down instead of hanging.
+	n.signalCommitWaitersLocked()
 }
 
 func (n *Node) failWaitersLocked(err error) {
@@ -287,6 +298,8 @@ func (n *Node) sendAppendEntriesLocked(peer string) {
 	}
 	n.aeInflight[peer] = true
 	n.aePending[peer] = false
+	n.aeGen++
+	sendGen := n.aeGen
 	next := n.nextIndex[peer]
 	if next < 1 {
 		next = 1
@@ -319,14 +332,14 @@ func (n *Node) sendAppendEntriesLocked(peer string) {
 			}
 			return
 		}
-		n.onAppendEntriesReplyLocked(peer, args, reply)
+		n.onAppendEntriesReplyLocked(peer, args, reply, sendGen)
 		if n.role == Leader && n.aePending[peer] {
 			n.sendAppendEntriesLocked(peer)
 		}
 	}()
 }
 
-func (n *Node) onAppendEntriesReplyLocked(peer string, args AppendEntriesArgs, reply AppendEntriesReply) {
+func (n *Node) onAppendEntriesReplyLocked(peer string, args AppendEntriesArgs, reply AppendEntriesReply, sendGen uint64) {
 	if reply.Term > n.currentTerm {
 		n.becomeFollowerLocked(reply.Term)
 		return
@@ -342,6 +355,9 @@ func (n *Node) onAppendEntriesReplyLocked(peer string, args AppendEntriesArgs, r
 		n.nextIndex[peer] = n.matchIndex[peer] + 1
 		oldCommit := n.commitIndex
 		n.maybeAdvanceCommitLocked()
+		// A successful AppendEntries in this term is a leadership ack for
+		// any ReadIndex whose barrier is older than this dispatch.
+		n.noteReadAckLocked(peer, sendGen)
 		// Push commitIndex as soon as it moves, and catch up any peer
 		// whose in-flight RPC still carried a stale LeaderCommit.
 		if n.commitIndex > oldCommit {
@@ -384,6 +400,7 @@ func (n *Node) maybeAdvanceCommitLocked() {
 		if count >= n.quorum() {
 			n.commitIndex = idx
 			n.applyCommittedLocked()
+			n.signalCommitWaitersLocked()
 			return
 		}
 	}
@@ -404,6 +421,7 @@ func (n *Node) applyCommittedLocked() {
 			delete(n.waiters, n.lastApplied)
 		}
 	}
+	n.signalApplyWaitersLocked()
 }
 
 // HandleRequestVote is the RequestVote RPC handler (Raft §5.2 + §5.4.1).
@@ -518,6 +536,10 @@ func (n *Node) HandleAppendEntries(args AppendEntriesArgs) AppendEntriesReply {
 // (applied locally) or ctx expires / leadership is lost.
 func (n *Node) Propose(ctx context.Context, cmd []byte) error {
 	n.mu.Lock()
+	if !n.aliveLocked() {
+		n.mu.Unlock()
+		return ErrStopped
+	}
 	if n.role != Leader {
 		leader := n.leaderID
 		n.mu.Unlock()
